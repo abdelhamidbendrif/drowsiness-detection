@@ -34,6 +34,7 @@ Improvements over v1
 """
 
 import argparse
+import threading
 import cv2
 import numpy as np
 import mediapipe as mp
@@ -188,10 +189,12 @@ except Exception as e:
     raise SystemExit(1)
 
 # MediaPipe Face Mesh
+# refine_landmarks=False  →  skips iris tracking (landmarks 468-477).
+# We don't use iris landmarks, so this is safe and saves ~30% inference time.
 mp_face_mesh = mp.solutions.face_mesh
 face_mesh    = mp_face_mesh.FaceMesh(
     max_num_faces=1,
-    refine_landmarks=True,
+    refine_landmarks=False,
     min_detection_confidence=0.5,
     min_tracking_confidence=0.5
 )
@@ -419,39 +422,104 @@ if not cap.isOpened():
 print("🎥  System started — Press 'q' to quit")
 
 # Pre-create the window at a fixed size so all UI elements are always visible.
-# cv2.WINDOW_NORMAL allows user resizing; resizeWindow sets the initial size.
 _win_title = f"Drowsiness Detection System  |  {'IP Camera' if IS_IP_CAMERA else f'Webcam [{CAMERA_SOURCE}]'}"
 cv2.namedWindow(_win_title, cv2.WINDOW_NORMAL)
 cv2.resizeWindow(_win_title, DISPLAY_W, DISPLAY_H)
 
 
 # ============================================================
+# BACKGROUND THREADS  (keep display loop unblocked)
+# ============================================================
+
+# ---- Thread 1: IP-camera frame capture ----
+# Continuously reads frames in the background so the main loop
+# always gets the LATEST frame without waiting for network I/O.
+# For local webcams this thread is not started (cap.read() is instant).
+_cap_frame   = None
+_cap_lock    = threading.Lock()
+_cap_running = True
+
+def _capture_loop():
+    global _cap_frame, _cap_running
+    while _cap_running:
+        ret, f = cap.read()
+        if ret and f is not None:
+            # Resize once here, off the main thread
+            if f.shape[1] != DISPLAY_W or f.shape[0] != DISPLAY_H:
+                f = cv2.resize(f, (DISPLAY_W, DISPLAY_H),
+                               interpolation=cv2.INTER_LINEAR)
+            with _cap_lock:
+                _cap_frame = f
+
+if IS_IP_CAMERA:
+    _cap_thread = threading.Thread(target=_capture_loop, daemon=True)
+    _cap_thread.start()
+    print("🧵  IP-camera capture thread started.")
+    # Give the thread a moment to buffer the first frame
+    time.sleep(0.5)
+
+# ---- Thread 2: CNN inference ----
+# Runs eye_model and mouth_model in the background.
+# Main loop submits a (eye_input, mouth_input) job and immediately
+# reads back the last completed result — zero blocking.
+#
+# Why model(x, training=False) instead of model.predict(x)?
+#   predict() is designed for large batches: it adds progress-bar
+#   overhead, dataset wrapping, and Python dispatch per call.
+#   For single frames, direct __call__ is 5-10× faster on CPU.
+_cnn_lock    = threading.Lock()
+_cnn_job     = None          # (eye_input, mouth_input) to be processed
+_cnn_result  = (0.0, 0.0)   # latest (eye_pred, mouth_pred)
+_cnn_running = True
+
+def _cnn_loop():
+    global _cnn_result, _cnn_running
+    while _cnn_running:
+        with _cnn_lock:
+            job = _cnn_job
+        if job is not None:
+            eye_in, mouth_in = job
+            ep = float(eye_model(eye_in,     training=False)[0][0])
+            mp_val = float(mouth_model(mouth_in, training=False)[0][0])
+            with _cnn_lock:
+                _cnn_result = (ep, mp_val)
+                # Clear job only if it hasn't been replaced by a newer one
+                global _cnn_job
+                if _cnn_job is job:
+                    _cnn_job = None
+        else:
+            time.sleep(0.002)   # yield CPU briefly when idle
+
+_cnn_thread = threading.Thread(target=_cnn_loop, daemon=True)
+_cnn_thread.start()
+print("🧵  CNN inference thread started.")
+
+# ============================================================
 # MAIN LOOP
 # ============================================================
 while True:
-    # ---- IP-camera buffer flush ----
-    # Discard stale buffered frames so we always process the LATEST frame.
-    # Without this, lag accumulates and the display falls further and further
-    # behind real time.  For local webcams this is a no-op (grab() is instant).
+    # ---- Frame acquisition ----
     if IS_IP_CAMERA:
-        for _ in range(IP_FLUSH_FRAMES):
-            cap.grab()   # fast decode-skip (no image copy)
+        # Non-blocking: grab the latest frame the capture thread has ready.
+        # The capture thread runs continuously in the background, so we
+        # never wait for network I/O here.
+        with _cap_lock:
+            frame = _cap_frame
+        if frame is None:
+            time.sleep(0.01)   # wait for first frame on startup
+            continue
+        frame = frame.copy()   # copy before processing (thread safety)
+    else:
+        ret, frame = cap.read()
+        if not ret:
+            print("⚠️   Frame capture failed — retrying …")
+            time.sleep(0.05)
+            continue
+        if frame.shape[1] != DISPLAY_W or frame.shape[0] != DISPLAY_H:
+            frame = cv2.resize(frame, (DISPLAY_W, DISPLAY_H),
+                               interpolation=cv2.INTER_LINEAR)
 
-    ret, frame = cap.read()
-    if not ret:
-        print("⚠️   Frame capture failed — retrying …")
-        time.sleep(0.05)
-        continue
-
-    # ---- Normalise resolution ----
-    # Always work on DISPLAY_W × DISPLAY_H internally.
-    # This guarantees identical landmark positions and UI layout
-    # regardless of what resolution the camera actually delivers.
-    if frame.shape[1] != DISPLAY_W or frame.shape[0] != DISPLAY_H:
-        frame = cv2.resize(frame, (DISPLAY_W, DISPLAY_H),
-                           interpolation=cv2.INTER_LINEAR)
-
-    h, w  = DISPLAY_H, DISPLAY_W          # always 480, 640
+    h, w = DISPLAY_H, DISPLAY_W          # always 480, 640
     rgb   = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
     # ---- FPS calculation ----
@@ -498,15 +566,21 @@ while True:
                 print(f"✅  Calibration done — EAR_thresh={EAR_THRESHOLD:.3f} "
                       f"(15th pct)  MAR_thresh={MAR_THRESHOLD:.3f} (85th pct)")
 
-        # ---- CNN prediction (every SKIP_FRAMES) ----
-        # eye_model  → trained on MRL Eye Dataset (cropped eye images) → eye crop
-        # mouth_model → trained on Yawn Eye Dataset (full-face images) → face crop
+        # ---- CNN prediction (non-blocking) ----
+        # Submit a job to the CNN thread every SKIP_FRAMES.
+        # The main loop never waits — it reads the last completed result.
+        # eye_model  → eye-region crop  (MRL Eye Dataset: cropped eyes)
+        # mouth_model → full-face crop  (Yawn Eye Dataset: full-face images)
         frame_counter += 1
         if frame_counter % SKIP_FRAMES == 0:
             eye_input   = preprocess_eye_region(frame, landmarks, w, h)
             mouth_input = preprocess_face_region(frame, landmarks, w, h)
-            eye_pred    = float(eye_model.predict(eye_input,   verbose=0)[0][0])
-            mouth_pred  = float(mouth_model.predict(mouth_input, verbose=0)[0][0])
+            with _cnn_lock:
+                _cnn_job = (eye_input, mouth_input)   # submit to CNN thread
+
+        # Read latest completed CNN result (always instant)
+        with _cnn_lock:
+            eye_pred, mouth_pred = _cnn_result
 
         # ---- Fusion score ----
         # Smooth raw EAR before using it — removes single-frame spikes from
@@ -666,6 +740,8 @@ while True:
 # ============================================================
 # CLEANUP
 # ============================================================
+_cap_running = False
+_cnn_running = False
 stop_alarm()
 cap.release()
 cv2.destroyAllWindows()
