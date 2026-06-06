@@ -103,8 +103,17 @@ W_MOUTH = 0.30
 W_HEAD  = 0.20
 
 # CNN weights inside each score (geometric vs. CNN)
-W_CNN   = 0.50
-W_GEO   = 0.50
+# Eye: trust CNN heavily (0.70) — it was trained on 50k images and is robust
+# to bad cameras and glasses reflections. Raw EAR geometry gets only 0.30.
+# Mouth: keep 50/50 since the mouth CNN dataset is smaller (1.2k images).
+W_CNN_EYE   = 0.70   # CNN contribution to eye score
+W_GEO_EYE   = 0.30   # EAR geometry contribution to eye score
+W_CNN_MOUTH = 0.50   # CNN contribution to mouth score
+W_GEO_MOUTH = 0.50   # MAR geometry contribution to mouth score
+
+# EAR smoothing — exponential moving average applied to raw EAR each frame.
+# Prevents a single blurry frame from spiking the fatigue score.
+EAR_SMOOTH_ALPHA = 0.4   # lower = smoother but slower to react
 
 # ============================================================
 # LANDMARK INDICES (MediaPipe 478-point model)
@@ -367,6 +376,9 @@ mouth_pred    = 0.0
 fatigue_smooth = 0.0
 SMOOTH_ALPHA   = 0.3
 
+# EAR smoothing — separate EMA to de-noise raw geometry before fusion
+ear_smooth     = EAR_THRESHOLD_DEF   # initialise at sane value
+
 # Previous metric values (shown when face temporarily lost)
 last_ear   = 0.0
 last_mar   = 0.0
@@ -471,14 +483,20 @@ while True:
             calib_ear_samples.append(ear)
             calib_mar_samples.append(mar)
             if elapsed_calib >= CALIB_SECONDS:
-                # Use mean − 1 std-dev for EAR (eyes more closed than normal = drowsy)
-                EAR_THRESHOLD = float(np.mean(calib_ear_samples) - 0.5 * np.std(calib_ear_samples))
-                EAR_THRESHOLD = max(EAR_THRESHOLD, 0.15)   # hard floor
-                # MAR threshold: mean + 1.5 std-dev (mouth more open than normal = yawn)
-                MAR_THRESHOLD = float(np.mean(calib_mar_samples) + 1.5 * np.std(calib_mar_samples))
+                # --- EAR threshold ---
+                # Use the 15th percentile of baseline EAR samples.
+                # Percentile is far more robust than mean-std: a few blink frames
+                # or noisy frames from a bad webcam don't skew the result.
+                # 15th pct ≈ "the EAR that 85% of your open-eye frames are above"
+                EAR_THRESHOLD = float(np.percentile(calib_ear_samples, 15))
+                EAR_THRESHOLD = max(EAR_THRESHOLD, 0.15)   # hard floor (safety)
+                # --- MAR threshold ---
+                # 85th percentile of resting mouth → triggered only by clear yawns
+                MAR_THRESHOLD = float(np.percentile(calib_mar_samples, 85))
                 MAR_THRESHOLD = min(MAR_THRESHOLD, 0.90)   # hard ceiling
                 calibrated = True
-                print(f"✅  Calibration done — EAR_thresh={EAR_THRESHOLD:.3f}  MAR_thresh={MAR_THRESHOLD:.3f}")
+                print(f"✅  Calibration done — EAR_thresh={EAR_THRESHOLD:.3f} "
+                      f"(15th pct)  MAR_thresh={MAR_THRESHOLD:.3f} (85th pct)")
 
         # ---- CNN prediction (every SKIP_FRAMES) ----
         # eye_model  → trained on MRL Eye Dataset (cropped eye images) → eye crop
@@ -491,20 +509,25 @@ while True:
             mouth_pred  = float(mouth_model.predict(mouth_input, verbose=0)[0][0])
 
         # ---- Fusion score ----
-        ear_score   = max(0.0, (EAR_THRESHOLD - ear)   / (EAR_THRESHOLD + 1e-6))
-        mar_score   = max(0.0, (mar - MAR_THRESHOLD)   / (MAR_THRESHOLD + 1e-6))
-        eye_final   = W_CNN * eye_pred   + W_GEO * ear_score
-        mouth_final = W_CNN * mouth_pred + W_GEO * mar_score
+        # Smooth raw EAR before using it — removes single-frame spikes from
+        # glasses reflections, blinks, or poor camera quality.
+        ear_smooth  = EAR_SMOOTH_ALPHA * ear + (1 - EAR_SMOOTH_ALPHA) * ear_smooth
+
+        ear_score   = max(0.0, (EAR_THRESHOLD - ear_smooth) / (EAR_THRESHOLD + 1e-6))
+        mar_score   = max(0.0, (mar - MAR_THRESHOLD)        / (MAR_THRESHOLD + 1e-6))
+        eye_final   = W_CNN_EYE   * eye_pred   + W_GEO_EYE   * ear_score
+        mouth_final = W_CNN_MOUTH * mouth_pred + W_GEO_MOUTH * mar_score
         head_final  = min(1.0, roll / 30.0 + pitch / 5.0)
 
-        fatigue_raw = W_EYE * eye_final + W_MOUTH * mouth_final + W_HEAD * head_final
+        fatigue_raw    = W_EYE * eye_final + W_MOUTH * mouth_final + W_HEAD * head_final
         fatigue_smooth = SMOOTH_ALPHA * fatigue_raw + (1 - SMOOTH_ALPHA) * fatigue_smooth
-        fatigue_pct = int(fatigue_smooth * 100)
+        fatigue_pct    = int(fatigue_smooth * 100)
         last_fatigue_pct = fatigue_pct
 
         # ---- Event counters ----
+        # Use the smoothed EAR for event counting too (same de-noising benefit)
         # Eye closure events
-        if ear < EAR_THRESHOLD:
+        if ear_smooth < EAR_THRESHOLD:
             consec_eye_close += 1
         else:
             if eye_close_active and consec_eye_close >= EYE_CLOSE_FRAMES:
@@ -614,9 +637,9 @@ while True:
 
         # --- Bottom metrics strip ---
         cv2.rectangle(frame, (0, h - 28), (w, h), (18, 18, 18), -1)
-        metrics_txt = (f"EAR:{ear:.2f}  MAR:{mar:.2f}  "
-                       f"ROLL:{roll:.1f}deg  PITCH:{pitch:.2f}  "
-                       f"CNN_Eye:{eye_pred:.2f}  CNN_Mouth:{mouth_pred:.2f}")
+        metrics_txt = (f"EAR:{ear:.2f}(s:{ear_smooth:.2f})  MAR:{mar:.2f}  "
+                       f"ROLL:{roll:.1f}d  "
+                       f"CNN_E:{eye_pred:.2f}  CNN_M:{mouth_pred:.2f}")
         cv2.putText(frame, metrics_txt, (8, h - 8),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.40, (180, 180, 180), 1, cv2.LINE_AA)
 
