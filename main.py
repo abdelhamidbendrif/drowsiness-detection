@@ -473,22 +473,22 @@ _cnn_result  = (0.0, 0.0)   # latest (eye_pred, mouth_pred)
 _cnn_running = True
 
 def _cnn_loop():
-    global _cnn_result, _cnn_running
+    global _cnn_result, _cnn_running, _cnn_job   # all globals declared upfront
     while _cnn_running:
         with _cnn_lock:
             job = _cnn_job
         if job is not None:
             eye_in, mouth_in = job
-            ep = float(eye_model(eye_in,     training=False)[0][0])
+            ep     = float(eye_model(eye_in,     training=False)[0][0])
             mp_val = float(mouth_model(mouth_in, training=False)[0][0])
             with _cnn_lock:
                 _cnn_result = (ep, mp_val)
                 # Clear job only if it hasn't been replaced by a newer one
-                global _cnn_job
                 if _cnn_job is job:
                     _cnn_job = None
         else:
             time.sleep(0.002)   # yield CPU briefly when idle
+
 
 _cnn_thread = threading.Thread(target=_cnn_loop, daemon=True)
 _cnn_thread.start()
