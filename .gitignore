@@ -1,0 +1,19 @@
+# Environnement virtuel
+venv/
+
+# Modèles trop lourds pour GitHub
+models/
+
+# Outputs
+outputs/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# VS Code
+.vscode/
+
+# Windows
+Thumbs.db
