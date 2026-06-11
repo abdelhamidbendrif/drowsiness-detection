@@ -68,7 +68,14 @@ Training-only dependencies are separate:
 .\venv\Scripts\python.exe -m pip install -r requirements-training.txt
 ```
 
-Make sure both `.keras` files are present in `models/`. The folder is ignored by Git, so include it manually in the final ZIP or configure Git LFS before repository submission.
+Make sure both `.keras` files are present in `models/`. The eye model is stored directly in Git, while the mouth model uses Git LFS.
+
+This GitHub repository stores `models/mouth_model.keras` with Git LFS. After cloning, retrieve it with:
+
+```powershell
+git lfs install
+git lfs pull
+```
 
 ## Run the detector
 
