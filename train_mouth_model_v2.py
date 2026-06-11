@@ -12,8 +12,7 @@ Key improvements over v1:
   [IMP-6] TFDataset-style repeated dataset avoids generator reset artefacts
 """
 
-import os, numpy as np
-import tensorflow as tf
+import numpy as np
 from tensorflow.keras.applications import MobileNetV2
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import (Dense, Dropout, GlobalAveragePooling2D,
@@ -66,15 +65,15 @@ yawn_test_gen = val_datagen.flow_from_directory(
     shuffle=False
 )
 
-print(f"✅ Classes : {yawn_train_gen.class_indices}")
-print(f"📊 Train : {yawn_train_gen.samples} | Test : {yawn_test_gen.samples}")
+print(f"[OK] Classes : {yawn_train_gen.class_indices}")
+print(f"[DATA] Train : {yawn_train_gen.samples} | Test : {yawn_test_gen.samples}")
 
 # ── Class weights ──────────────────────────────────────────────────────────
 # [IMP-3] Handle label imbalance (yawn images are often fewer than no_yawn)
 labels    = yawn_train_gen.classes
 weights   = compute_class_weight('balanced', classes=np.unique(labels), y=labels)
 class_wt  = dict(enumerate(weights))
-print(f"⚖️  Class weights : {class_wt}")
+print(f"[DATA] Class weights : {class_wt}")
 
 # ── Model ──────────────────────────────────────────────────────────────────
 base2 = MobileNetV2(input_shape=(64, 64, 3), include_top=False, weights='imagenet')
@@ -98,7 +97,7 @@ mouth_model_v2.compile(
     metrics=['accuracy', 'AUC']
 )
 
-print(f"✅ Trainable params : {sum(p.numpy().size for p in mouth_model_v2.trainable_weights):,}")
+print(f"[OK] Trainable params : {sum(p.numpy().size for p in mouth_model_v2.trainable_weights):,}")
 
 # ── Callbacks ──────────────────────────────────────────────────────────────
 callbacks2 = [
@@ -113,7 +112,7 @@ callbacks2 = [
 ]
 
 # ── Training ───────────────────────────────────────────────────────────────
-print("\n🚀 Training CNN Mouth (v2) — 50 epochs max …")
+print("\n[TRAIN] CNN Mouth v2 - 50 epochs max...")
 history2 = mouth_model_v2.fit(
     yawn_train_gen,
     epochs=50,                    # [IMP-1] was 30 — model hadn't converged
@@ -125,9 +124,9 @@ history2 = mouth_model_v2.fit(
 
 best_acc = max(history2.history['val_accuracy'])
 best_auc = max(history2.history['val_AUC'])
-print(f"\n✅ Done!")
-print(f"🏆 Best val_accuracy : {best_acc:.4f}  ({best_acc*100:.2f}%)")
-print(f"🏆 Best val_AUC      : {best_auc:.4f}  ({best_auc*100:.2f}%)")
+print("\n[DONE]")
+print(f"[BEST] val_accuracy : {best_acc:.4f}  ({best_acc*100:.2f}%)")
+print(f"[BEST] val_AUC      : {best_auc:.4f}  ({best_auc*100:.2f}%)")
 
 # ── Evaluation ─────────────────────────────────────────────────────────────
 from sklearn.metrics import classification_report, confusion_matrix
@@ -135,13 +134,13 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 test_loss, test_acc, test_auc = mouth_model_v2.evaluate(yawn_test_gen, verbose=0)
-print(f"\n📊 Final Test Accuracy : {test_acc:.4f}")
-print(f"📊 Final Test AUC      : {test_auc:.4f}")
+print(f"\n[TEST] Accuracy : {test_acc:.4f}")
+print(f"[TEST] AUC      : {test_auc:.4f}")
 
 y_pred = (mouth_model_v2.predict(yawn_test_gen, verbose=0) > 0.5).astype(int).flatten()
 y_true = yawn_test_gen.classes
 
-print("\n📋 Classification Report:")
+print("\n[TEST] Classification Report:")
 print(classification_report(y_true, y_pred, target_names=['no_yawn', 'yawn']))
 
 # Confusion matrix

@@ -1,10 +1,9 @@
-# Environnement virtuel
+# Virtual environment
 venv/
 
-# Modèles trop lourds pour GitHub
-models/
 
-# Outputs
+
+# Runtime outputs
 outputs/
 
 # Python cache
@@ -12,8 +11,11 @@ __pycache__/
 *.pyc
 *.pyo
 
-# VS Code
+# Editors and operating system
 .vscode/
-
-# Windows
 Thumbs.db
+
+# Local secrets and temporary state
+.env
+.streamlit/secrets.toml
+*.tmp

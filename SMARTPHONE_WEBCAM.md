@@ -17,10 +17,10 @@
    - Open DroidCam on phone → note the IP address shown.
    - In the PC client enter that IP and port `4747`.
 
-### OpenCV usage
-```python
+### Project usage
+```powershell
 # DroidCam registers as a virtual camera — usually index 1 or 2
-cap = cv2.VideoCapture(1)   # try 1 first, then 2
+.\venv\Scripts\python.exe main.py --source 1
 ```
 
 ---
@@ -34,14 +34,13 @@ cap = cv2.VideoCapture(1)   # try 1 first, then 2
 2. Scroll to bottom → tap **Start Server**.
 3. Note the URL shown, e.g. `http://192.168.1.42:8080`.
 
-### OpenCV usage
-```python
-# Use the MJPEG stream URL — no virtual camera driver needed
-PHONE_IP   = "192.168.1.42"   # ← replace with your phone's IP
-PHONE_PORT = 8080
-stream_url = f"http://{PHONE_IP}:{PHONE_PORT}/video"
+### Project usage
+```powershell
+# Replace the example address with the IP shown by IP Webcam
+.\venv\Scripts\python.exe main.py --source phone 192.168.1.42
 
-cap = cv2.VideoCapture(stream_url)
+# Use this form if the application uses a different port
+.\venv\Scripts\python.exe main.py --source phone 192.168.1.42 --phone-port 8080
 ```
 
 > **Tip:** Phone and laptop must be on the **same Wi-Fi network**.
@@ -58,9 +57,9 @@ cap = cv2.VideoCapture(stream_url)
 2. **PC:** Install the **EpocCam driver** from `elgato.com/epoccam`.
 3. Connect iPhone via USB or Wi-Fi.
 
-### OpenCV usage
-```python
-cap = cv2.VideoCapture(1)   # or 2 — whichever index EpocCam takes
+### Project usage
+```powershell
+.\venv\Scripts\python.exe main.py --source 1
 ```
 
 ---
@@ -97,16 +96,10 @@ for idx in range(5):
 
 ---
 
-## Recommended Setting in main.py
+## Fast demo command
 
-```python
-# ---- Camera source selector ----
-USE_IP_WEBCAM = False           # set True to use IP Webcam
-PHONE_IP      = "192.168.1.42"  # your phone's IP (IP Webcam app)
-PHONE_PORT    = 8080
+Use a shorter calibration only for a presentation rehearsal:
 
-if USE_IP_WEBCAM:
-    cap = cv2.VideoCapture(f"http://{PHONE_IP}:{PHONE_PORT}/video")
-else:
-    cap = cv2.VideoCapture(1)   # DroidCam / EpocCam virtual camera
+```powershell
+.\venv\Scripts\python.exe main.py --source phone 192.168.1.42 --calibration-seconds 10
 ```
